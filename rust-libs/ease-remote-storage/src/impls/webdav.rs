@@ -170,7 +170,17 @@ impl Webdav {
         let mut url = reqwest::Url::parse(&self.addr)
             .map_err(|e| StorageBackendError::UrlParseError(e.to_string()))?;
         let base = url.path();
-        url.set_path(&(base.trim_end_matches('/').to_string() + "/" + dir.trim_start_matches('/')));    
+
+        // Properly encode the path to handle Chinese characters and spaces
+        let dir_trimmed = dir.trim_start_matches('/');
+        let full_path = if dir_trimmed.is_empty() {
+            base.trim_end_matches('/').to_string()
+        } else {
+            format!("{}/{}", base.trim_end_matches('/'), dir_trimmed)
+        };
+
+        // Use url.set_path which automatically handles URL encoding
+        url.set_path(&full_path);
         Ok(url)
     }
 
@@ -210,8 +220,20 @@ impl Webdav {
 
         let mut ret: Vec<Entry> = Default::default();
         for item in obj.response {
-            let path = item.href;
-            let mut name = item.propstat.prop.displayname.unwrap_or(Default::default());
+            // Decode URL-encoded href to handle Chinese characters and spaces properly
+            let decoded_href = urlencoding::decode(&item.href)
+                .map_err(|_| StorageBackendError::UrlParseError("Failed to decode href".to_string()))?;
+            let path = decoded_href.to_string();
+
+            // Decode displayname if present, otherwise use empty string
+            let mut name = if let Some(displayname) = item.propstat.prop.displayname {
+                urlencoding::decode(&displayname)
+                    .map_err(|_| StorageBackendError::UrlParseError("Failed to decode displayname".to_string()))?
+                    .to_string()
+            } else {
+                String::default()
+            };
+
             let is_dir = item.propstat.prop.resourcetype.collection.is_some();
             let size = item.propstat.prop.getcontentlength;
             let mut path = self.get_href(path.as_str())?;
@@ -228,7 +250,11 @@ impl Webdav {
             if name.is_empty() {
                 let splited: Vec<&str> = path.split("/").collect();
                 if !splited.is_empty() {
-                    name = splited.last().unwrap().to_string();
+                    // Decode the filename extracted from path as well
+                    let filename = splited.last().unwrap();
+                    name = urlencoding::decode(filename)
+                        .map_err(|_| StorageBackendError::UrlParseError("Failed to decode filename".to_string()))?
+                        .to_string();
                 }
             }
 
@@ -506,5 +532,21 @@ mod test {
 
         let chunk = file.bytes().await.unwrap();
         assert_eq!(chunk.as_ref(), [51]);
+    }
+
+    #[test]
+    fn test_url_decoding() {
+        // Test URL decoding for Chinese characters and spaces
+        let encoded_chinese = "%E4%B8%AD%E6%96%87%E6%B5%8B%E8%AF%95"; // "中文测试"
+        let decoded_chinese = urlencoding::decode(encoded_chinese).unwrap();
+        assert_eq!(decoded_chinese, "中文测试");
+
+        let encoded_space = "test%20file.mp3"; // "test file.mp3"
+        let decoded_space = urlencoding::decode(encoded_space).unwrap();
+        assert_eq!(decoded_space, "test file.mp3");
+
+        let encoded_mixed = "%E9%9F%B3%E4%B9%90%20%E6%96%87%E4%BB%B6.mp3"; // "音乐 文件.mp3"
+        let decoded_mixed = urlencoding::decode(encoded_mixed).unwrap();
+        assert_eq!(decoded_mixed, "音乐 文件.mp3");
     }
 }

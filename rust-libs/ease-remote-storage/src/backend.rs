@@ -74,7 +74,11 @@ pub trait StorageBackend {
 impl StreamFile {
     pub fn new(resp: reqwest::Response, byte_offset: u64) -> Self {
         let url = resp.url().to_string();
-        let name = url.split('/').last().unwrap();
+        let encoded_name = url.split('/').last().unwrap();
+        // Decode URL-encoded filename to handle Chinese characters and spaces properly
+        let name = urlencoding::decode(encoded_name)
+            .map(|decoded| decoded.to_string())
+            .unwrap_or_else(|_| encoded_name.to_string());
         let header_map = resp.headers();
         let content_length = header_map.get(reqwest::header::CONTENT_LENGTH).map(|v| {
             let v = v.to_str().unwrap();
@@ -87,7 +91,7 @@ impl StreamFile {
             inner: StreamFileInner::Response(resp),
             total: content_length,
             content_type,
-            name: name.to_string(),
+            name,
             byte_offset,
         }
     }
